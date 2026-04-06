@@ -255,7 +255,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let prompt = formatMessages(missedMessages, TIMEZONE);
 
   // Optional BearMemori enrichment — main group only, gated by env var.
-  // Failures are logged and the plain prompt is used.
+  // fetchMemoryContext logs its own warnings on failure; we just fall back
+  // to the plain prompt when it returns null.
   if (isMainGroup && process.env.BEARMEMORI_URL) {
     const latest = missedMessages[missedMessages.length - 1].content;
     const context = await fetchMemoryContext(latest);
@@ -264,11 +265,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info(
         { group: group.name, chars: context.length },
         'BearMemori context injected',
-      );
-    } else {
-      logger.warn(
-        { group: group.name },
-        'BearMemori context unavailable, proceeding without memory',
       );
     }
   }
