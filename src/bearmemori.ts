@@ -37,7 +37,7 @@ export async function fetchMemoryContext(
 
     if (!res.ok) {
       logger.warn(
-        { status: res.status, query },
+        { status: res.status, url, query },
         'BearMemori returned non-OK status',
       );
       return null;
