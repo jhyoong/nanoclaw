@@ -48,6 +48,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { fetchMemoryContext } from './bearmemori.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
@@ -251,7 +252,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  let prompt = formatMessages(missedMessages, TIMEZONE);
+
+  // Optional BearMemori enrichment — main group only, gated by env var.
+  // Failures are logged and the plain prompt is used.
+  if (isMainGroup && process.env.BEARMEMORI_URL) {
+    const latest = missedMessages[missedMessages.length - 1].content;
+    const context = await fetchMemoryContext(latest);
+    if (context) {
+      prompt = `<memory-context>\n${context}\n</memory-context>\n\n${prompt}`;
+      logger.info(
+        { group: group.name, chars: context.length },
+        'BearMemori context injected',
+      );
+    } else {
+      logger.warn(
+        { group: group.name },
+        'BearMemori context unavailable, proceeding without memory',
+      );
+    }
+  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
