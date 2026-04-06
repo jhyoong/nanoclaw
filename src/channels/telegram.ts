@@ -2,7 +2,7 @@ import fs from 'fs';
 import https from 'https';
 import path from 'path';
 
-import { Api, Bot } from 'grammy';
+import { Api, Bot, GrammyError } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -90,7 +90,10 @@ export class TelegramChannel implements Channel {
       const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
       const resp = await fetch(fileUrl);
       if (!resp.ok) {
-        logger.warn({ fileId, status: resp.status }, 'Telegram file download failed');
+        logger.warn(
+          { fileId, status: resp.status },
+          'Telegram file download failed',
+        );
         return null;
       }
 
@@ -369,33 +372,106 @@ export class TelegramChannel implements Channel {
       return;
     }
 
-    try {
-      const numericId = jid.replace(/^tg:/, '');
-      const options = threadId
-        ? { message_thread_id: parseInt(threadId, 10) }
-        : {};
+    const numericId = jid.replace(/^tg:/, '');
+    const options = threadId
+      ? { message_thread_id: parseInt(threadId, 10) }
+      : {};
 
-      // Telegram has a 4096 character limit per message — split if needed
-      const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text, options);
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await sendTelegramMessage(
-            this.bot.api,
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-            options,
-          );
-        }
+    // Telegram has a 4096 character limit per message — split if needed
+    const MAX_LENGTH = 4096;
+    const chunks: string[] = [];
+    if (text.length <= MAX_LENGTH) {
+      chunks.push(text);
+    } else {
+      for (let i = 0; i < text.length; i += MAX_LENGTH) {
+        chunks.push(text.slice(i, i + MAX_LENGTH));
       }
-      logger.info(
-        { jid, length: text.length, threadId },
-        'Telegram message sent',
-      );
-    } catch (err) {
-      logger.error({ jid, err }, 'Failed to send Telegram message');
     }
+
+    const MAX_RETRIES = 3;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        for (const chunk of chunks) {
+          await sendTelegramMessage(this.bot.api, numericId, chunk, options);
+        }
+        logger.info(
+          { jid, length: text.length, threadId },
+          'Telegram message sent',
+        );
+        return;
+      } catch (err) {
+        const delayMs = this.getRetryDelay(err, attempt);
+        if (delayMs === null || attempt === MAX_RETRIES) {
+          logger.error(
+            { jid, err, attempt, retryable: delayMs !== null },
+            'Failed to send Telegram message',
+          );
+          throw err;
+        }
+        logger.warn(
+          { jid, attempt, delayMs, err },
+          'Telegram send failed, retrying',
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+  }
+
+  /**
+   * Determine if a Telegram send error is transient and worth retrying.
+   */
+  private isRetryableError(err: unknown): boolean {
+    return this.getRetryDelay(err, 0) !== null;
+  }
+
+  /**
+   * Get the delay before retrying a failed send.
+   * Returns null if the error is not retryable.
+   * Respects Telegram's explicit retry_after value for 429 responses.
+   */
+  private getRetryDelay(err: unknown, attempt: number): number | null {
+    if (err instanceof GrammyError) {
+      // Telegram 429 includes an explicit retry_after in seconds
+      if (err.parameters?.retry_after) {
+        return err.parameters.retry_after * 1000;
+      }
+      // Telegram 409 Conflict (another bot instance polling)
+      if (err.error_code === 409) {
+        return 2000 * Math.pow(2, attempt - 1);
+      }
+      // Telegram 5xx server errors
+      if (err.error_code >= 500 && err.error_code < 600) {
+        return 2000 * Math.pow(2, attempt - 1);
+      }
+    }
+    if (err instanceof Error) {
+      const msg = err.message.toLowerCase();
+      // Network failures, timeouts, TLS errors
+      if (
+        msg.includes('network') ||
+        msg.includes('timeout') ||
+        msg.includes('econnreset') ||
+        msg.includes('econnrefused') ||
+        msg.includes('enotfound') ||
+        msg.includes('socket')
+      ) {
+        return 2000 * Math.pow(2, attempt - 1);
+      }
+      // Fallback: check for 429/409/5xx in the message string
+      if (msg.includes('429') || msg.includes('too many requests')) {
+        const match = msg.match(/retry after (\d+)/i);
+        if (match) return parseInt(match[1], 10) * 1000;
+        return 2000 * Math.pow(2, attempt - 1);
+      }
+      if (msg.includes('409') || msg.includes('conflict')) {
+        return 2000 * Math.pow(2, attempt - 1);
+      }
+      if (/5\d{2}/.test(msg)) {
+        return 2000 * Math.pow(2, attempt - 1);
+      }
+    }
+    return null;
   }
 
   isConnected(): boolean {

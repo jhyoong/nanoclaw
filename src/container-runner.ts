@@ -272,8 +272,10 @@ async function buildContainerArgs(
 
   // Pass custom Anthropic endpoint config AFTER OneCLI so these override any
   // placeholder values OneCLI sets (Docker uses the last -e value for a key).
-  if (ANTHROPIC_API_KEY) args.push('-e', `ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}`);
-  if (ANTHROPIC_BASE_URL) args.push('-e', `ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}`);
+  if (ANTHROPIC_API_KEY)
+    args.push('-e', `ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}`);
+  if (ANTHROPIC_BASE_URL)
+    args.push('-e', `ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}`);
   if (ANTHROPIC_MODEL) args.push('-e', `ANTHROPIC_MODEL=${ANTHROPIC_MODEL}`);
 
   // Bypass the OneCLI proxy for the custom base URL host so the injected

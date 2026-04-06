@@ -26,15 +26,36 @@ vi.mock('../logger.js', () => ({
 
 // Mock group-folder (used by downloadFile)
 vi.mock('../group-folder.js', () => ({
-  resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/test-groups/${folder}`),
+  resolveGroupFolderPath: vi.fn(
+    (folder: string) => `/tmp/test-groups/${folder}`,
+  ),
 }));
-
 
 // --- Grammy mock ---
 
 type Handler = (...args: any[]) => any;
 
 const botRef = vi.hoisted(() => ({ current: null as any }));
+const grammyErrorRef = vi.hoisted(() => ({
+  current: class MockGrammyError extends Error {
+    error_code: number;
+    description: string;
+    parameters: { retry_after?: number };
+
+    constructor(
+      message: string,
+      error_code: number,
+      description: string,
+      parameters?: { retry_after?: number },
+    ) {
+      super(message);
+      this.name = 'GrammyError';
+      this.error_code = error_code;
+      this.description = description;
+      this.parameters = parameters || {};
+    }
+  },
+}));
 
 vi.mock('grammy', () => ({
   Bot: class MockBot {
@@ -74,6 +95,7 @@ vi.mock('grammy', () => ({
 
     stop() {}
   },
+  GrammyError: grammyErrorRef.current,
 }));
 
 import fs from 'fs';
@@ -200,10 +222,13 @@ describe('TelegramChannel', () => {
     vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
 
     // Mock global fetch for file downloads
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
-    }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(8)),
+      }),
+    );
   });
 
   afterEach(() => {
@@ -678,7 +703,12 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createMediaCtx({
-        extra: { photo: [{ file_id: 'small_id', width: 90 }, { file_id: 'large_id', width: 800 }] },
+        extra: {
+          photo: [
+            { file_id: 'small_id', width: 90 },
+            { file_id: 'large_id', width: 800 },
+          ],
+        },
       });
       await triggerMediaMessage('message:photo', ctx);
       await flushPromises();
@@ -707,7 +737,8 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Photo] (/workspace/group/attachments/photo_1.jpg) Look at this',
+          content:
+            '[Photo] (/workspace/group/attachments/photo_1.jpg) Look at this',
         }),
       );
     });
@@ -738,7 +769,9 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'documents/file_0.pdf' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'documents/file_0.pdf',
+      });
 
       const ctx = createMediaCtx({
         extra: { document: { file_name: 'report.pdf', file_id: 'doc_id' } },
@@ -750,7 +783,8 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Document: report.pdf] (/workspace/group/attachments/report.pdf)',
+          content:
+            '[Document: report.pdf] (/workspace/group/attachments/report.pdf)',
         }),
       );
     });
@@ -760,7 +794,9 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'videos/file_0.mp4' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'videos/file_0.mp4',
+      });
 
       const ctx = createMediaCtx({
         extra: { video: { file_id: 'vid_id' } },
@@ -782,7 +818,9 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'voice/file_0.oga' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'voice/file_0.oga',
+      });
 
       const ctx = createMediaCtx({
         extra: { voice: { file_id: 'voice_id' } },
@@ -804,7 +842,9 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'audio/file_0.mp3' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'audio/file_0.mp3',
+      });
 
       const ctx = createMediaCtx({
         extra: { audio: { file_id: 'audio_id', file_name: 'song.mp3' } },
@@ -882,9 +922,13 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.getFile.mockResolvedValueOnce({ file_path: 'documents/file_0.bin' });
+      currentBot().api.getFile.mockResolvedValueOnce({
+        file_path: 'documents/file_0.bin',
+      });
 
-      const ctx = createMediaCtx({ extra: { document: { file_id: 'doc_id' } } });
+      const ctx = createMediaCtx({
+        extra: { document: { file_id: 'doc_id' } },
+      });
       await triggerMediaMessage('message:document', ctx);
       await flushPromises();
 
@@ -962,19 +1006,161 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it('handles send failure gracefully', async () => {
+    it('retries on transient network errors and succeeds', async () => {
+      vi.useFakeTimers();
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.sendMessage.mockRejectedValueOnce(
-        new Error('Network error'),
+      // Fail twice, then succeed
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce(
+          new Error('Network request for sendMessage failed!'),
+        )
+        .mockRejectedValueOnce(
+          new Error('Network request for sendMessage failed!'),
+        )
+        .mockResolvedValueOnce({ message_id: 1 });
+
+      const promise = channel.sendMessage('tg:100200300', 'Hello');
+
+      // Advance timers past all retry delays (2s + 4s = 6s)
+      await vi.advanceTimersByTimeAsync(7000);
+      await promise;
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+    });
+
+    it('throws after exhausting retries on persistent errors', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Always fail with a retryable error on both Markdown and plain text attempts
+      const networkErr = new Error('Network request for sendMessage failed!');
+      currentBot().api.sendMessage.mockRejectedValue(networkErr);
+
+      // Capture unhandled rejections from the Markdown→plain-text fallback chain
+      const unhandledHandler = vi.fn();
+      process.on('unhandledRejection', unhandledHandler);
+
+      const promise = channel.sendMessage('tg:100200300', 'Will fail');
+
+      // Advance timers past all retry delays (2s + 4s + 8s = 14s)
+      await vi.advanceTimersByTimeAsync(15000);
+
+      await expect(promise).rejects.toThrow('Network request');
+
+      process.off('unhandledRejection', unhandledHandler);
+      vi.useRealTimers();
+    });
+
+    it('does not retry on non-retryable errors', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Non-retryable error (bad request) — reject both Markdown and plain text attempts
+      currentBot().api.sendMessage.mockRejectedValue(
+        new Error('Bad Request: chat not found'),
       );
 
-      // Should not throw
       await expect(
-        channel.sendMessage('tg:100200300', 'Will fail'),
-      ).resolves.toBeUndefined();
+        channel.sendMessage('tg:100200300', 'Bad chat'),
+      ).rejects.toThrow('Bad Request');
+
+      // 2 calls: Markdown attempt + plain text fallback, then no retries
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('respects retry_after from Telegram 429 response', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // First attempt: both Markdown and plain-text fail with 429
+      const rateLimitErr = new grammyErrorRef.current(
+        'Too Many Requests: retry after 3',
+        429,
+        'Too Many Requests: retry after 3',
+        { retry_after: 3 },
+      );
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce(rateLimitErr)
+        .mockRejectedValueOnce(rateLimitErr)
+        .mockResolvedValueOnce({ message_id: 1 });
+
+      const promise = channel.sendMessage('tg:100200300', 'Hello');
+
+      // Flush the initial attempt (Markdown + plain-text fallback)
+      await vi.advanceTimersByTimeAsync(0);
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+
+      // At 2s (default backoff), the retry should NOT have fired yet
+      // because retry_after is 3s
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+
+      // After 3s total (retry_after), the retry should fire
+      await vi.advanceTimersByTimeAsync(1000);
+      await promise;
+
+      // 2 from first attempt + 1 from retry (Markdown succeeds)
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+    });
+
+    it('retries on 5xx server errors with exponential backoff', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const serverErr = new grammyErrorRef.current(
+        'Internal Server Error',
+        500,
+        'Internal Server Error',
+      );
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce(serverErr)
+        .mockRejectedValueOnce(serverErr)
+        .mockResolvedValueOnce({ message_id: 1 });
+
+      const promise = channel.sendMessage('tg:100200300', 'Hello');
+
+      // Advance past 2s + 4s = 6s
+      await vi.advanceTimersByTimeAsync(7000);
+      await promise;
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+    });
+
+    it('retries on 409 Conflict with exponential backoff', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const conflictErr = new grammyErrorRef.current(
+        'Conflict: terminated by other getUpdates request',
+        409,
+        'Conflict: terminated by other getUpdates request',
+      );
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce(conflictErr)
+        .mockResolvedValueOnce({ message_id: 1 });
+
+      const promise = channel.sendMessage('tg:100200300', 'Hello');
+
+      await vi.advanceTimersByTimeAsync(2500);
+      await promise;
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
     });
 
     it('does nothing when bot is not initialized', async () => {
