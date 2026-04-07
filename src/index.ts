@@ -5,6 +5,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  BEARMEMORI_URL,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
@@ -257,7 +258,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Optional BearMemori enrichment — main group only, gated by env var.
   // fetchMemoryContext logs its own warnings on failure; we just fall back
   // to the plain prompt when it returns null.
-  if (isMainGroup && process.env.BEARMEMORI_URL) {
+  if (isMainGroup && BEARMEMORI_URL) {
     const latest = missedMessages[missedMessages.length - 1].content;
     const context = await fetchMemoryContext(latest);
     if (context) {
@@ -549,7 +550,23 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend, TIMEZONE);
+          let formatted = formatMessages(messagesToSend, TIMEZONE);
+
+          // Mirror the BearMemori enrichment that processGroupMessages does
+          // on the cold path. Without this, follow-up turns that get piped
+          // into an already-running container have no memory context and the
+          // agent sees inconsistent memory availability turn-to-turn.
+          if (isMainGroup && BEARMEMORI_URL) {
+            const latest = messagesToSend[messagesToSend.length - 1].content;
+            const context = await fetchMemoryContext(latest);
+            if (context) {
+              formatted = `<memory-context>\n${context}\n</memory-context>\n\n${formatted}`;
+              logger.info(
+                { group: group.name, chars: context.length },
+                'BearMemori context injected (piped)',
+              );
+            }
+          }
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(

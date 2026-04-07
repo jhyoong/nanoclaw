@@ -1,3 +1,4 @@
+import { BEARMEMORI_URL } from './config.js';
 import { logger } from './logger.js';
 
 interface RetrieveResponse {
@@ -21,11 +22,10 @@ const EVENT_DAYS = 7;
 export async function fetchMemoryContext(
   query: string,
 ): Promise<string | null> {
-  const baseUrl = process.env.BEARMEMORI_URL;
-  if (!baseUrl) return null;
+  if (!BEARMEMORI_URL) return null;
 
   const url =
-    `${baseUrl.replace(/\/$/, '')}/memory/retrieve` +
+    `${BEARMEMORI_URL.replace(/\/$/, '')}/memory/retrieve` +
     `?query_context=${encodeURIComponent(query)}` +
     `&top_k=${TOP_K}` +
     `&event_days=${EVENT_DAYS}`;

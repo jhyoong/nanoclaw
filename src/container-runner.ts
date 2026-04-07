@@ -171,14 +171,34 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
+  // One-way sync: container/skills/ is the single source of truth. Copy
+  // everything in, and prune anything in the destination that no longer
+  // exists in source — otherwise removed skills leave orphan SKILL.md files
+  // that keep telling the agent about tools that no longer exist.
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
+    const srcSkills = new Set(
+      fs
+        .readdirSync(skillsSrc)
+        .filter((name) => fs.statSync(path.join(skillsSrc, name)).isDirectory()),
+    );
+    for (const skillDir of srcSkills) {
+      fs.cpSync(
+        path.join(skillsSrc, skillDir),
+        path.join(skillsDst, skillDir),
+        { recursive: true },
+      );
+    }
+    if (fs.existsSync(skillsDst)) {
+      for (const existing of fs.readdirSync(skillsDst)) {
+        if (!srcSkills.has(existing)) {
+          fs.rmSync(path.join(skillsDst, existing), {
+            recursive: true,
+            force: true,
+          });
+        }
+      }
     }
   }
   mounts.push({

@@ -13,6 +13,7 @@ const envConfig = readEnvFile([
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_MODEL',
+  'BEARMEMORI_URL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -105,3 +106,9 @@ export const ANTHROPIC_BASE_URL =
   process.env.ANTHROPIC_BASE_URL || envConfig.ANTHROPIC_BASE_URL;
 export const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || envConfig.ANTHROPIC_MODEL;
+
+// Optional BearMemori memory enrichment endpoint (read-only integration).
+// When set, the main-group prompt is enriched with relevant memories from
+// BearMemori's /memory/retrieve. Leave unset to disable.
+export const BEARMEMORI_URL =
+  process.env.BEARMEMORI_URL || envConfig.BEARMEMORI_URL;
